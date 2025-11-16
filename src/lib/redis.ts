@@ -1,11 +1,11 @@
-import Redis from 'ioredis';
+import Redis, { RedisOptions } from 'ioredis';
 import { config } from '../config';
 
 // Enhanced Redis configuration for Railway
-const redisOptions: Redis.RedisOptions = {
+const redisOptions: RedisOptions = {
     maxRetriesPerRequest: null,
     enableReadyCheck: true,
-    retryStrategy(times) {
+    retryStrategy: (times: number) => {  // Fixed: Added type annotation
         const delay = Math.min(times * 50, 2000);
         return delay;
     },
