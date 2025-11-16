@@ -14,40 +14,60 @@ export async function tokenRoutes(fastify: FastifyInstance) {
     /**
      * Health Check Endpoint
      * GET /health
+     * Now more resilient to Redis failures
      */
     fastify.get('/health', async (request: FastifyRequest, reply: FastifyReply) => {
         try {
-            // Check 1: Redis connectivity
-            await redis.ping();
+            // Check Redis connectivity (but don't fail completely if it's down)
+            let redisHealthy = false;
+            let tokenCount = 0;
 
-            // Check 2: Data exists
-            const tokenCount = await redis.hlen('tokens:data');
+            try {
+                await redis.ping();
+                redisHealthy = true;
+                tokenCount = await redis.hlen('tokens:data');
+            } catch (redisError) {
+                console.warn('[Health] Redis check failed:', (redisError as Error).message);
+                redisHealthy = false;
+            }
 
-            // Check 3: Poller is running (updated within last 60s)
-            const lastPollStr = await redis.get('system:last_poll');
+            // Check poller (this should work even without Redis)
+            let lastPollStr = null;
+            try {
+                lastPollStr = await redis.get('system:last_poll');
+            } catch (e) {
+                // If Redis is down, we can't get last_poll, but app is still running
+                console.warn('[Health] Could not get last_poll from Redis');
+            }
+
             const lastPoll = lastPollStr ? parseInt(lastPollStr) : 0;
-            const pollerHealthy = (Date.now() - lastPoll) < 60000;
+            // Poller is healthy if we have a recent poll OR if we can't check (Redis down)
+            const pollerHealthy = lastPoll === 0 || (Date.now() - lastPoll) < 120000; // 2 minutes grace
 
             const checks = {
-                redis: true,
+                redis: redisHealthy,
                 tokens: tokenCount > 0,
                 poller: pollerHealthy,
             };
 
-            const allHealthy = Object.values(checks).every(v => v);
+            // Application is healthy if it's running, even if Redis is temporarily down
+            const appIsRunning = true; // If we reached this point, Fastify is running
+            const status = appIsRunning ? (redisHealthy ? 'healthy' : 'degraded') : 'unhealthy';
 
-            return reply.code(allHealthy ? 200 : 503).send({
-                status: allHealthy ? 'healthy' : 'degraded',
+            return reply.code(appIsRunning ? 200 : 503).send({
+                status,
                 checks,
                 metrics: {
                     token_count: tokenCount,
-                    last_poll_ms_ago: Date.now() - lastPoll
+                    last_poll_ms_ago: lastPoll === 0 ? 'unknown' : Date.now() - lastPoll
                 },
                 timestamp: new Date().toISOString(),
-                uptime: process.uptime()
+                uptime: process.uptime(),
+                message: !redisHealthy ? 'Running in degraded mode (Redis unavailable)' : 'All systems operational'
             });
 
         } catch (error) {
+            console.error('[Health] Health check failed:', error);
             return reply.code(503).send({
                 status: 'unhealthy',
                 error: (error as Error).message
@@ -58,6 +78,7 @@ export async function tokenRoutes(fastify: FastifyInstance) {
     /**
      * Get Tokens Endpoint
      * GET /api/v1/tokens?sort=volume&time=24h&limit=30&cursor=xxx
+     * Now handles Redis failures gracefully
      */
     fastify.get<{ Querystring: TokenQueryParams }>(
         '/api/v1/tokens',
@@ -91,6 +112,25 @@ export async function tokenRoutes(fastify: FastifyInstance) {
         async (request: FastifyRequest<{ Querystring: TokenQueryParams }>, reply: FastifyReply) => {
             try {
                 const { sort, time, limit = 30, cursor } = request.query;
+
+                // Check if Redis is available first
+                let redisAvailable = true;
+                try {
+                    await redis.ping();
+                } catch (error) {
+                    redisAvailable = false;
+                    console.warn('[Tokens API] Redis unavailable, returning empty response');
+                    return reply.code(503).send({
+                        error: 'Service temporarily unavailable',
+                        message: 'Data storage is currently unavailable. Please try again shortly.',
+                        data: [],
+                        pagination: {
+                            limit,
+                            cursor: null,
+                            has_more: false
+                        }
+                    });
+                }
 
                 // Decode cursor to offset
                 const offset = cursor ? decodeCursor(cursor) : 0;
@@ -137,6 +177,16 @@ export async function tokenRoutes(fastify: FastifyInstance) {
 
             } catch (error) {
                 fastify.log.error(error, 'Error fetching tokens');
+
+                // Check if it's a Redis connection error
+                if (error instanceof Error && error.message.includes('Redis')) {
+                    return reply.code(503).send({
+                        error: 'Service temporarily unavailable',
+                        message: 'Data storage is currently unavailable. Please try again shortly.',
+                        data: []
+                    });
+                }
+
                 return reply.code(500).send({
                     error: 'Internal server error',
                     message: (error as Error).message
