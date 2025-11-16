@@ -1,6 +1,13 @@
 import Redis from 'ioredis';
 import { config } from '../config';
 
+// --- THIS IS THE FIX ---
+// We add "?family=0" to the URL to handle Railway's networking
+const connectionString = config.REDIS_URL.includes('?')
+    ? config.REDIS_URL
+    : config.REDIS_URL + '?family=0';
+// --- END OF FIX ---
+
 // Enhanced Redis configuration for Railway
 const redisOptions = {
     maxRetriesPerRequest: 1, // Reduced to minimize error spam
@@ -19,7 +26,8 @@ const redisOptions = {
     keepAlive: 1000,
 };
 
-const redis = new Redis(config.REDIS_URL, redisOptions);
+// Use the new, fixed connectionString here
+const redis = new Redis(connectionString, redisOptions);
 
 let isConnected = false;
 
@@ -33,7 +41,7 @@ redis.on('ready', () => {
     isConnected = true;
 });
 
-redis.on('error', (err) => {
+redis.on('error', (err: Error) => {
     if (!isConnected) {
         console.error('[Redis] ❌ Connection failed:', err.message);
         isConnected = false;
