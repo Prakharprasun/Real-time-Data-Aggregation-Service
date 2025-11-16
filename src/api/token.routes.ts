@@ -136,7 +136,7 @@ export async function tokenRoutes(fastify: FastifyInstance) {
                 };
 
             } catch (error) {
-                fastify.log.error('Error fetching tokens:', error);
+                fastify.log.error(error, 'Error fetching tokens');
                 return reply.code(500).send({
                     error: 'Internal server error',
                     message: (error as Error).message
