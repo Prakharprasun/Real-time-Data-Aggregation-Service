@@ -1,28 +1,35 @@
-import Redis, { RedisOptions } from 'ioredis';
+import Redis from 'ioredis';
 import { config } from '../config';
 
-// Enhanced Redis configuration for Railway
-const redisOptions: RedisOptions = {
-    maxRetriesPerRequest: null,
+const redisOptions = {
+    maxRetriesPerRequest: 3, // Reduced from null to 3
     enableReadyCheck: true,
-    retryStrategy: (times: number) => {  // Fixed: Added type annotation
+    retryStrategy: (times: number) => {
         const delay = Math.min(times * 50, 2000);
         return delay;
     },
-    // Railway Redis often needs TLS
-    tls: config.NODE_ENV === 'production' ? {} : undefined,
-    lazyConnect: true, // Don't fail startup if Redis is unavailable
+    lazyConnect: true,
+    // Reduce connection timeout for faster failure
+    connectTimeout: 5000,
+    commandTimeout: 5000,
 };
 
 const redis = new Redis(config.REDIS_URL, redisOptions);
 
-redis.on('connect', () => console.log('[Redis] ✅ Connected successfully'));
+let errorLogged = false;
+
+redis.on('connect', () => {
+    console.log('[Redis] ✅ Connected successfully');
+    errorLogged = false; // Reset error flag on reconnect
+});
+
 redis.on('ready', () => console.log('[Redis] ✅ Ready for commands'));
+
 redis.on('error', (err) => {
-    console.error('[Redis] ❌ Connection error:', err.message);
-    // In production, we can continue without Redis temporarily
-    if (config.NODE_ENV === 'production') {
-        console.warn('[Redis] Running in degraded mode - real-time features disabled');
+    // Only log the first error to reduce spam
+    if (!errorLogged) {
+        console.error('[Redis] ❌ Connection error:', err.message);
+        errorLogged = true;
     }
 });
 
