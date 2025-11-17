@@ -86,7 +86,7 @@ A high-performance, production-ready service that aggregates real-time meme coin
 
 1. **Clone and Install**
 ```bash
-git clone <your-repo-url>
+git clone https://github.com/Prakharprasun/Real-time-Data-Aggregation-Service.git
 cd realtime-token-aggregator
 npm install
 ```
